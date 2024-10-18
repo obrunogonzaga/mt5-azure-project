@@ -64,3 +64,5 @@ Desktop.ini
 # Secret keys / configs
 *.env
 .env.*
+
+ohlc*

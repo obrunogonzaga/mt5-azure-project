@@ -1,6 +1,8 @@
 import MetaTrader5 as mt5
 import pandas as pd 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import os
 from datetime import date, datetime, timedelta, time
 from dotenv import load_dotenv
@@ -16,7 +18,7 @@ class MarketWatch():
         except ValueError:
             print("Error: The value METATRADER_USERNAME is not a valid number.")
         except TypeError:
-            print("Error: Missing a require enriroment variable.")
+            print("Error: Missing a required environment variable.")
         except Exception as e:
             print(f"Unexpected error: {e}")
 
@@ -50,7 +52,7 @@ class MarketWatch():
         }
 
         if not os.path.isdir('ohlc'):
-            print("'ohlc' folder doesn't exists. Creating...")
+            print("'ohlc' folder doesn't exist. Creating...")
             os.mkdir('ohlc')
             for timeframe_dir in self.timeframe_dict.keys():
                 try:
@@ -59,13 +61,68 @@ class MarketWatch():
                 except FileExistsError:
                     print(f"Folder '{timeframe_dir}' exists. Skipping...")
 
-        # Criar diretório 'ticks' se não existir
+        # Create 'ticks' directory if it doesn't exist
         if not os.path.isdir('ticks'):
-            print("'ticks' folder doesn't exists. Creating...")
+            print("'ticks' folder doesn't exist. Creating...")
             try:
                 os.mkdir('ticks')
-                print("'ticks' folder create successfully.")
+                print("'ticks' folder created successfully.")
             except Exception as e:
-                print(f"Error: folder 'ticks' don't created: {e}")
+                print(f"Error: folder 'ticks' not created: {e}")
         else:
             print("'ticks' folder already exists. No action required.")
+
+    def update_ohlc(self, symbol, timeframe, start_date=datetime(2012, 1, 1), end_date=datetime.now()):
+        # Check if the symbol is valid
+        if not mt5.symbol_select(symbol):
+            print(f"Error: Invalid symbol '{symbol}'.")
+            return None
+        
+        # Check if the timeframe is supported
+        if timeframe not in self.timeframe_dict.keys():
+            print(f"Error: Invalid timeframe '{timeframe}'.")
+            return None
+        
+        if not os.path.exists(f'ohlc\\{timeframe}\\{symbol}_{timeframe}.csv'):
+            df = pd.DataFrame(columns=['time', 'open', 'high', 'low', 'close', 'tick_volume', 'spread', 'real_volume'])
+        else:
+            df = pd.read_csv(f'ohlc\\{timeframe}\\{symbol}_{timeframe}.csv')
+            df['time'] = pd.to_datetime(df['time'])
+            if df['time'].max() < datetime.now() - timedelta(days=7): start_date = df['time'].max()
+            else: return
+        
+        timedelta_default = timedelta(days=self.timeframe_dict[timeframe][1])
+        end_date_aux = start_date + timedelta_default
+        timeframe_name = timeframe
+        mt5_timeframe = self.timeframe_dict[timeframe][0]
+
+        while True:
+            data_aux = mt5.copy_rates_range(symbol, mt5_timeframe, start_date, min(end_date_aux, end_date))
+            df_aux = pd.DataFrame(data_aux)
+            df_aux['time'] = pd.to_datetime(df_aux['time'], unit='s')
+            df = pd.concat([df, df_aux], ignore_index=True)
+
+            if end_date_aux >= end_date: break
+
+            start_date = df_aux['time'].max()
+            end_date_aux = start_date + timedelta_default
+
+        # Save the updated DataFrame to the CSV file
+        df.sort_values(by='time', inplace=True, ignore_index=True, ascending=False)
+        #convert_csv_to_parquet(df, symbol, timeframe)
+        df.to_csv(f'ohlc\\{timeframe_name}\\{symbol}_{timeframe_name}.csv', index=False)
+
+    def get_next_actual_win_symbol(self):
+        symbols = mt5.symbols_get()
+        codigo_mini_indice = None
+        for symbol in symbols:
+            if symbol.name.startswith('WIN'):
+                if symbol.select == 1 and symbol.visible == True: codigo_mini_indice = symbol.name
+
+        return codigo_mini_indice
+
+    def convert_csv_to_parquet(self, df, symbol, timeframe):
+        table = pa.Table.from_pandas(df)
+        writer = pq.ParquetWriter(f'ohlc\\{timeframe}\\{symbol}_{timeframe}.parquet', table.schema)
+        writer.write_table(table)
+        writer.close()
